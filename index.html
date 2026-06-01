@@ -1,0 +1,504 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Revenue Dashboard</title>
+  <script src="https://cdn.sheetjs.com/xlsx-latest/package/dist/xlsx.full.min.js"></script>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      font-family: Arial, sans-serif;
+      background: #f0f2f5;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    #header {
+      padding: 10px 18px;
+      background: #fff;
+      border-bottom: 2px solid #e0e4ea;
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      flex-wrap: wrap;
+      flex-shrink: 0;
+      box-shadow: 0 1px 4px rgba(0,0,0,0.07);
+    }
+
+    h1 { font-size: 17px; font-weight: 700; color: #1a1a2e; white-space: nowrap; }
+    h1 span { color: #e94560; }
+
+    .filters { display: flex; gap: 10px; align-items: flex-end; flex-wrap: wrap; flex: 1; }
+
+    .fg { display: flex; flex-direction: column; gap: 3px; }
+    .fg label { font-size: 10px; color: #999; text-transform: uppercase; letter-spacing: .5px; font-weight: 600; }
+
+    select {
+      background: #f7f8fa; border: 1px solid #d0d5dd; color: #222;
+      padding: 6px 10px; border-radius: 5px; font-size: 13px; cursor: pointer; min-width: 130px;
+    }
+    select:focus { outline: none; border-color: #e94560; }
+
+    .btn {
+      background: #e94560; color: #fff; border: none; padding: 7px 14px;
+      border-radius: 5px; cursor: pointer; font-size: 13px; font-weight: 600; white-space: nowrap;
+    }
+    .btn:hover { background: #c73652; }
+    .btn.sec { background: #fff; border: 1px solid #d0d5dd; color: #444; }
+    .btn.sec:hover { border-color: #e94560; color: #e94560; }
+    .btn.danger { background: #c0392b; }
+    .btn.danger:hover { background: #a93226; }
+
+    #map { flex: 1; }
+
+    #status-bar {
+      padding: 5px 18px; background: #fff; font-size: 12px; color: #aaa;
+      display: flex; gap: 22px; flex-shrink: 0; border-top: 1px solid #e0e4ea;
+    }
+    .si { display: flex; gap: 5px; align-items: center; }
+    .sv { color: #222; font-weight: 700; }
+    .sv.red { color: #e94560; }
+
+    .backdrop {
+      display: none; position: fixed; inset: 0;
+      background: rgba(0,0,0,0.4); z-index: 1000;
+      align-items: center; justify-content: center;
+    }
+    .backdrop.open { display: flex; }
+
+    .modal {
+      background: #fff; border-radius: 10px; padding: 24px;
+      width: 440px; max-height: 85vh; overflow-y: auto;
+      box-shadow: 0 8px 32px rgba(0,0,0,0.15);
+    }
+    .modal h2 { font-size: 15px; margin-bottom: 16px; border-bottom: 1px solid #eee; padding-bottom: 10px; }
+
+    .field { margin-top: 14px; }
+    .field label { display: block; font-size: 12px; color: #888; margin-bottom: 4px; font-weight: 600; }
+    .field input, .field select {
+      width: 100%; background: #f7f8fa; border: 1px solid #d0d5dd;
+      color: #222; padding: 8px 10px; border-radius: 5px; font-size: 13px;
+    }
+    .field input:focus, .field select:focus { outline: none; border-color: #e94560; }
+
+    .modal-actions { display: flex; gap: 8px; margin-top: 20px; justify-content: flex-end; }
+
+    #prog-wrap { display: none; margin-top: 14px; }
+    #prog-track { background: #eee; border-radius: 20px; height: 8px; overflow: hidden; }
+    #prog-fill {
+      height: 100%; background: linear-gradient(90deg,#e94560,#f4a261);
+      border-radius: 20px; transition: width .3s; width: 0;
+    }
+    #prog-label { font-size: 11px; color: #888; margin-top: 5px; text-align: center; }
+
+    .urow {
+      display: flex; justify-content: space-between; align-items: center;
+      padding: 9px 12px; border: 1px solid #eee; border-radius: 6px;
+      margin-bottom: 6px; font-size: 13px; background: #fafafa;
+    }
+    .urow-title { font-weight: 700; }
+    .urow-meta  { font-size: 11px; color: #aaa; margin-top: 2px; }
+
+    #legend {
+      position: absolute; bottom: 30px; left: 12px;
+      background: rgba(255,255,255,0.96); border: 1px solid #ddd;
+      border-radius: 8px; padding: 10px 14px; font-size: 12px;
+      z-index: 10; pointer-events: none;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+    }
+    .ltitle { font-size: 10px; color: #888; margin-bottom: 7px; text-transform: uppercase; letter-spacing: .5px; font-weight: 700; }
+    .lrow   { display: flex; align-items: center; gap: 7px; margin-bottom: 4px; color: #444; }
+    .ldot   { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
+
+    #bu-fg { display: none; }
+  </style>
+</head>
+<body>
+
+<div id="header">
+  <h1>Revenue <span>Dashboard</span></h1>
+  <div class="filters">
+    <div class="fg"><label>Year</label>
+      <select id="yr"><option value="all">All Years</option></select></div>
+    <div class="fg"><label>Month</label>
+      <select id="mo"><option value="all">All Months</option></select></div>
+    <div class="fg" id="bu-fg"><label>Business Unit</label>
+      <select id="bu"><option value="all">All Business Units</option></select></div>
+    <div class="fg"><label>Map Type</label>
+      <select id="mtype">
+        <option value="roadmap">Road Map</option>
+        <option value="hybrid">Satellite + Labels</option>
+        <option value="satellite">Satellite Only</option>
+      </select>
+    </div>
+  </div>
+  <div style="display:flex;gap:8px;align-items:flex-end;">
+    <button class="btn sec" id="manage-btn">Manage Uploads</button>
+    <button class="btn" id="upload-btn">+ Upload Excel</button>
+  </div>
+</div>
+
+<div style="position:relative;flex:1;display:flex;">
+  <div id="map" style="flex:1;"></div>
+  <div id="legend">
+    <div class="ltitle">Period Revenue</div>
+    <div class="lrow"><div class="ldot" style="background:#e94560;"></div>&gt; $5,000</div>
+    <div class="lrow"><div class="ldot" style="background:#f4a261;"></div>$1,000 – $5,000</div>
+    <div class="lrow"><div class="ldot" style="background:#2a9d8f;"></div>&lt; $1,000</div>
+    <div class="lrow"><div class="ldot" style="background:#bbb;"></div>$0 / No activity</div>
+  </div>
+</div>
+
+<div id="status-bar">
+  <div class="si"><span>Pins:</span><span class="sv" id="s-pins">0</span></div>
+  <div class="si"><span>Period Revenue:</span><span class="sv red" id="s-rev">$0</span></div>
+  <div class="si"><span>Lifetime Revenue:</span><span class="sv" id="s-life">$0</span></div>
+  <div class="si"><span>Uploads:</span><span class="sv" id="s-up">0</span></div>
+</div>
+
+<!-- Upload modal -->
+<div class="backdrop" id="up-modal">
+  <div class="modal">
+    <h2>Upload Revenue Report</h2>
+    <div class="field"><label>Excel File (.xlsx)</label>
+      <input type="file" id="file-input" accept=".xlsx,.xls"></div>
+    <div class="field"><label>Report Month</label>
+      <select id="up-mo">
+        <option value="1">January</option><option value="2">February</option>
+        <option value="3">March</option><option value="4">April</option>
+        <option value="5">May</option><option value="6">June</option>
+        <option value="7">July</option><option value="8">August</option>
+        <option value="9">September</option><option value="10">October</option>
+        <option value="11">November</option><option value="12">December</option>
+      </select></div>
+    <div class="field"><label>Report Year</label>
+      <input type="number" id="up-yr" value="2025" min="2020" max="2035"></div>
+    <div id="prog-wrap">
+      <div id="prog-track"><div id="prog-fill"></div></div>
+      <div id="prog-label"></div>
+    </div>
+    <div class="modal-actions">
+      <button class="btn sec" id="cancel-btn">Cancel</button>
+      <button class="btn" id="confirm-btn">Upload</button>
+    </div>
+  </div>
+</div>
+
+<!-- Manage modal -->
+<div class="backdrop" id="mg-modal">
+  <div class="modal" style="width:520px;">
+    <h2>Manage Uploaded Data</h2>
+    <div id="ulist"></div>
+    <div class="modal-actions">
+      <button class="btn danger" id="clear-btn">Clear All Data</button>
+      <button class="btn sec" id="close-mg-btn">Close</button>
+    </div>
+  </div>
+</div>
+
+<script>
+const SK = 'rev_dash_v3';
+const MN = ['','January','February','March','April','May','June','July','August','September','October','November','December'];
+
+let map, iw;
+let allC = [];
+let pins = [];
+
+function ls()  { try { return JSON.parse(localStorage.getItem(SK)) || {uploads:[],zips:{}}; } catch { return {uploads:[],zips:{}}; } }
+function ss(d) { try { localStorage.setItem(SK, JSON.stringify(d)); } catch(e) {} }
+
+window.initMap = function() {
+  const style = [
+    {featureType:'poi',     elementType:'all',           stylers:[{visibility:'off'}]},
+    {featureType:'transit', elementType:'all',           stylers:[{visibility:'off'}]},
+    {featureType:'road',    elementType:'labels.icon',   stylers:[{visibility:'off'}]},
+    {featureType:'landscape',elementType:'geometry',     stylers:[{color:'#f5f5f0'}]},
+    {featureType:'water',   elementType:'geometry',      stylers:[{color:'#aee0f4'}]},
+    {featureType:'road.highway',elementType:'geometry',  stylers:[{color:'#ffe082'}]},
+    {featureType:'road.arterial',elementType:'geometry', stylers:[{color:'#ffffff'}]},
+    {featureType:'road.local',  elementType:'geometry',  stylers:[{color:'#f8f8f8'}]},
+  ];
+
+  map = new google.maps.Map(document.getElementById('map'), {
+    center:{lat:32.82,lng:-79.95}, zoom:11,
+    mapTypeId:'roadmap', styles:style,
+    mapTypeControl:false, streetViewControl:false, fullscreenControl:true,
+  });
+
+  iw = new google.maps.InfoWindow({maxWidth:260});
+
+  document.getElementById('mtype').addEventListener('change', e => {
+    map.setMapTypeId(e.target.value);
+    map.setOptions({styles: e.target.value==='roadmap' ? style : []});
+  });
+
+  loadAndRender();
+};
+
+function loadAndRender() {
+  const d = ls();
+  allC = [];
+  d.uploads.forEach(u => u.customers.forEach(c =>
+    allC.push({...c, uploadMonth:u.month, uploadYear:u.year, uploadLabel:u.label})
+  ));
+  buildFilters();
+  render();
+  document.getElementById('s-up').textContent = d.uploads.length;
+}
+
+function buildFilters() {
+  const months=new Set(), years=new Set(), bus=new Set();
+  allC.forEach(c => { months.add(c.uploadMonth); years.add(c.uploadYear); if(c.businessUnit) bus.add(c.businessUnit); });
+  fill('yr', [...years].sort(),           v=>v, v=>v);
+  fill('mo', [...months].sort((a,b)=>a-b), v=>v, v=>MN[v]);
+  const bg = document.getElementById('bu-fg');
+  if(bus.size>0) { bg.style.display=''; fill('bu',[...bus].sort(),v=>v,v=>v); }
+  else bg.style.display='none';
+}
+
+function fill(id, vals, vFn, lFn) {
+  const s=document.getElementById(id), cur=s.value;
+  while(s.options.length>1) s.remove(1);
+  vals.forEach(v => s.add(new Option(lFn(v),vFn(v))));
+  s.value=cur;
+}
+
+function filtered() {
+  const mo=document.getElementById('mo').value;
+  const yr=document.getElementById('yr').value;
+  const bu=document.getElementById('bu').value;
+  return allC.filter(c => {
+    if(yr!=='all' && String(c.uploadYear)!==String(yr))   return false;
+    if(mo!=='all' && String(c.uploadMonth)!==String(mo))  return false;
+    if(bu!=='all' && c.businessUnit!==bu)                  return false;
+    return c.lat!=null && c.lng!=null;
+  });
+}
+
+// Spiral-spread customers that share the same zip centroid
+function spread(list) {
+  const b={};
+  list.forEach(c => { const k=c.zip; (b[k]=b[k]||[]).push(c); });
+  Object.values(b).forEach(g => {
+    g.forEach((c,i) => {
+      // deterministic offset per index so same file always looks the same
+      const angle = (i/Math.max(g.length,1))*2*Math.PI + (i*0.3);
+      const r = 0.002 * Math.sqrt(i+1);   // grows outward so dense zips fan out nicely
+      c.lat = c.lat + r*Math.cos(angle);
+      c.lng = c.lng + r*Math.sin(angle);
+    });
+  });
+}
+
+function render() {
+  pins.forEach(m=>m.setMap(null)); pins=[];
+  const list = filtered().map(c=>({...c}));
+  spread(list);
+  const bounds = new google.maps.LatLngBounds();
+  let tRev=0, tLife=0;
+
+  list.forEach(c => {
+    const rev  = c.completedRevenue||0;
+    const life = c.lifetimeRevenue||0;
+    tRev+=rev; tLife+=life;
+    const color = rev>5000?'#e94560': rev>1000?'#f4a261': rev>0?'#2a9d8f':'#bbbbbb';
+
+    const m = new google.maps.Marker({
+      position:{lat:c.lat,lng:c.lng}, map,
+      title:c.customerName,
+      icon:{
+        path:google.maps.SymbolPath.CIRCLE,
+        scale:5, fillColor:color, fillOpacity:1,
+        strokeColor:'#fff', strokeWeight:1.5,
+      },
+    });
+
+    const html=`
+      <div style="font-family:Arial,sans-serif;padding:2px;min-width:220px;">
+        <div style="font-size:14px;font-weight:700;color:#1a1a2e;margin-bottom:4px;">${esc(c.customerName)}</div>
+        <div style="font-size:11px;color:#888;margin-bottom:8px;line-height:1.4;">${esc(c.address)}</div>
+        <table style="font-size:12px;width:100%;border-collapse:collapse;">
+          <tr><td style="color:#666;padding:2px 0;">Period Revenue</td>
+              <td style="text-align:right;font-weight:700;color:#e94560;">${fmt(rev)}</td></tr>
+          <tr><td style="color:#666;padding:2px 0;">Lifetime Revenue</td>
+              <td style="text-align:right;font-weight:600;">${fmt(life)}</td></tr>
+          <tr><td style="color:#666;padding:2px 0;">Completed Jobs</td>
+              <td style="text-align:right;">${c.completedJobs||0}</td></tr>
+          <tr><td style="color:#666;padding:2px 0;">Report Period</td>
+              <td style="text-align:right;">${esc(c.uploadLabel)}</td></tr>
+          ${c.businessUnit?`<tr><td style="color:#666;padding:2px 0;">Business Unit</td>
+              <td style="text-align:right;">${esc(c.businessUnit)}</td></tr>`:''}
+        </table>
+      </div>`;
+
+    m.addListener('mouseover',()=>{iw.setContent(html);iw.open(map,m);});
+    m.addListener('mouseout', ()=>iw.close());
+    m.addListener('click',    ()=>{iw.setContent(html);iw.open(map,m);});
+    pins.push(m);
+    bounds.extend({lat:c.lat,lng:c.lng});
+  });
+
+  if(list.length>0 && !bounds.isEmpty()) map.fitBounds(bounds);
+  document.getElementById('s-pins').textContent = list.length;
+  document.getElementById('s-rev').textContent  = fmt(tRev);
+  document.getElementById('s-life').textContent = fmt(tLife);
+}
+
+['yr','mo','bu'].forEach(id=>document.getElementById(id).addEventListener('change',render));
+
+// ── Zippopotam.us zip geocode (free, no key, parallel-friendly) ──
+async function geocodeZip(zip) {
+  try {
+    const res=await fetch(`https://api.zippopotam.us/us/${zip}`);
+    if(!res.ok) return null;
+    const d=await res.json();
+    if(d.places&&d.places[0]) return {lat:parseFloat(d.places[0].latitude),lng:parseFloat(d.places[0].longitude)};
+  } catch {}
+  return null;
+}
+
+// ── Upload ──
+document.getElementById('upload-btn').addEventListener('click',()=>{
+  const now=new Date();
+  document.getElementById('up-mo').value=now.getMonth()+1;
+  document.getElementById('up-yr').value=now.getFullYear();
+  document.getElementById('file-input').value='';
+  document.getElementById('prog-wrap').style.display='none';
+  document.getElementById('confirm-btn').disabled=false;
+  document.getElementById('up-modal').classList.add('open');
+});
+
+document.getElementById('cancel-btn').addEventListener('click',()=>
+  document.getElementById('up-modal').classList.remove('open'));
+
+document.getElementById('confirm-btn').addEventListener('click', async()=>{
+  const file=document.getElementById('file-input').files[0];
+  if(!file){alert('Please select an Excel file.');return;}
+  const month=parseInt(document.getElementById('up-mo').value);
+  const year =parseInt(document.getElementById('up-yr').value);
+  const label=`${MN[month]} ${year}`;
+
+  document.getElementById('confirm-btn').disabled=true;
+  document.getElementById('prog-wrap').style.display='block';
+  prog(0,'Reading file…');
+
+  try {
+    const buf=await file.arrayBuffer();
+    const wb=XLSX.read(buf);
+    const rows=XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]]);
+    prog(5,`Parsed ${rows.length} records`);
+
+    const customers=rows.map(r=>({
+      customerName    : r['Customer Name']||r['Location Name']||'',
+      address         : (r['Customer Address']||'').trim(),
+      zip             : String(r['Customer Zip']||'').replace('.0','').padStart(5,'0'),
+      completedRevenue: parseFloat(r['Completed Revenue'])||0,
+      lifetimeRevenue : parseFloat(r['Locations Lifetime Revenue'])||0,
+      completedJobs   : parseInt(r['Completed Jobs'])||0,
+      businessUnit    : r['Business Unit']||r['BusinessUnit']||r['business_unit']||null,
+      lat:null, lng:null,
+    })).filter(c=>c.zip.length>=4);
+
+    // Geocode unique zip codes in parallel batches (fast)
+    const store=ls();
+    const uniqueZips=[...new Set(customers.map(c=>c.zip))].filter(z=>!store.zips[z]);
+    const BATCH=10; // 10 concurrent requests per batch
+    let zdone=0;
+    for(let i=0;i<uniqueZips.length;i+=BATCH){
+      const batch=uniqueZips.slice(i,i+BATCH);
+      const results=await Promise.all(batch.map(z=>geocodeZip(z)));
+      batch.forEach((z,j)=>{ if(results[j]) store.zips[z]=results[j]; });
+      zdone+=batch.length;
+      prog(5+Math.round((zdone/Math.max(uniqueZips.length,1))*60),
+        `Geocoding zips ${zdone}/${uniqueZips.length}…`);
+      if(i+BATCH<uniqueZips.length) await sleep(300); // brief pause between batches
+    }
+
+    // Assign lat/lng from zip lookup
+    let placed=0;
+    customers.forEach(c=>{
+      const zp=store.zips[c.zip];
+      if(zp){ c.lat=zp.lat; c.lng=zp.lng; placed++; }
+    });
+
+    prog(90,`Placed ${placed} of ${customers.length} customers`);
+
+    store.uploads=store.uploads.filter(u=>!(u.month===month&&u.year===year));
+    store.uploads.push({id:Date.now(),month,year,label,uploadedAt:new Date().toISOString(),customers});
+    ss(store);
+    prog(100,'Done!');
+
+    setTimeout(()=>{
+      document.getElementById('up-modal').classList.remove('open');
+      document.getElementById('confirm-btn').disabled=false;
+      loadAndRender();
+    },700);
+  } catch(err){
+    alert('Error: '+err.message);
+    document.getElementById('confirm-btn').disabled=false;
+  }
+});
+
+function prog(pct,text){
+  document.getElementById('prog-fill').style.width=pct+'%';
+  document.getElementById('prog-label').textContent=text;
+}
+function sleep(ms){return new Promise(r=>setTimeout(r,ms));}
+
+// ── Manage ──
+document.getElementById('manage-btn').addEventListener('click',()=>{
+  buildUList();
+  document.getElementById('mg-modal').classList.add('open');
+});
+document.getElementById('close-mg-btn').addEventListener('click',()=>
+  document.getElementById('mg-modal').classList.remove('open'));
+document.getElementById('clear-btn').addEventListener('click',()=>{
+  if(!confirm('Delete ALL data? This cannot be undone.')) return;
+  localStorage.removeItem(SK);
+  document.getElementById('mg-modal').classList.remove('open');
+  loadAndRender();
+});
+
+function buildUList(){
+  const d=ls(), el=document.getElementById('ulist');
+  el.innerHTML='';
+  if(!d.uploads.length){
+    el.innerHTML='<p style="color:#aaa;font-size:13px;padding:8px 0;">No uploads yet.</p>';return;
+  }
+  [...d.uploads].sort((a,b)=>(a.year*12+a.month)-(b.year*12+b.month)).forEach(u=>{
+    const placed=u.customers.filter(c=>c.lat!=null).length;
+    const div=document.createElement('div');
+    div.className='urow';
+    div.innerHTML=`
+      <div>
+        <div class="urow-title">${esc(u.label)}</div>
+        <div class="urow-meta">${u.customers.length} customers · ${placed} placed · ${new Date(u.uploadedAt).toLocaleDateString()}</div>
+      </div>
+      <button class="btn danger" style="padding:5px 10px;font-size:12px;" data-id="${u.id}">Delete</button>`;
+    div.querySelector('button').addEventListener('click',()=>delUpload(u.id));
+    el.appendChild(div);
+  });
+}
+
+function delUpload(id){
+  if(!confirm('Delete this upload?')) return;
+  const d=ls(); d.uploads=d.uploads.filter(u=>u.id!==id); ss(d);
+  buildUList(); loadAndRender();
+}
+
+function fmt(n){return new Intl.NumberFormat('en-US',{style:'currency',currency:'USD',maximumFractionDigits:0}).format(n||0);}
+function esc(s){return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
+</script>
+
+<script>
+  (g=>{var h,a,k,p="The Google Maps JavaScript API",c="google",l="importLibrary",q="__ib__",m=document,b=window;b=b[c]||(b[c]={});var d=b.maps||(b.maps={}),r=new Set,e=new URLSearchParams,u=()=>h||(h=new Promise(async(f,n)=>{await (a=m.createElement("script"));e.set("libraries",[...r]+"");for(k in g)e.set(k.replace(/[A-Z]/g,t=>"_"+t[0].toLowerCase()),g[k]);e.set("callback",c+".maps."+q);a.src=`https://maps.googleapis.com/maps/api/js?`+e;a.onerror=()=>h=n(Error(p+" could not load."));a.nonce=m.querySelector("script[nonce]")?.nonce||"";m.head.append(a);d[q]=f}));d[l]?console.warn(p+" only loads once. Ignoring:",g):d[l]=(f,...n)=>r.add(f)&&u().then(()=>d[l](f,...n))})
+  ({key:"AIzaSyBhdp-poLfVFEAe3oT7A1n78V3kuMixg0c",v:"weekly"});
+</script>
+<script>async function bootstrap(){await google.maps.importLibrary("maps");initMap();}bootstrap();</script>
+
+</body>
+</html>
