@@ -189,10 +189,10 @@
   <div id="legend">
     <div class="ltitle" id="legend-title">Revenue Density</div>
     <div id="legend-heat">
-      <div class="lrow"><div style="width:80px;height:10px;border-radius:4px;background:linear-gradient(90deg,#fff566,#ffc800,#ff7800,#ff2800,#b40000);"></div></div>
-      <div style="display:flex;justify-content:space-between;font-size:10px;color:#888;width:80px;margin-top:2px;">
-        <span>Low</span><span>High</span>
-      </div>
+      <div class="lrow"><div class="ldot" style="background:#ffcc00;"></div>Low avg revenue</div>
+      <div class="lrow"><div class="ldot" style="background:#ff9500;"></div>Mid avg revenue</div>
+      <div class="lrow"><div class="ldot" style="background:#f4522a;"></div>High avg revenue</div>
+      <div class="lrow" style="font-size:11px;color:#aaa;margin-top:4px;">Circle size = customer count</div>
     </div>
     <div id="legend-dots" style="display:none;">
       <div class="lrow"><div class="ldot" style="background:#e94560;"></div>&gt; $5,000</div>
@@ -256,11 +256,12 @@ const SK = 'rev_dash_v3';
 const MN = ['','January','February','March','April','May','June','July','August','September','October','November','December'];
 const DOT_ZOOM = 13; // zoom level where we switch from heatmap to individual dots
 
-let map, iw, heatmap, geocoder;
-let allC = [];          // all customers (with lat/lng)
-let activeMarkers = []; // currently rendered dot markers
-let currentFiltered = []; // filtered dataset cache
-let droppedPin = null;  // user's custom search pin
+let map, iw, geocoder;
+let allC = [];
+let activeMarkers = [];
+let zipCircles = [];      // zip-level overview circles
+let currentFiltered = [];
+let droppedPin = null;
 
 function ls()  { try { return JSON.parse(localStorage.getItem(SK)) || {uploads:[],zips:{}}; } catch { return {uploads:[],zips:{}}; } }
 function ss(d) { try { localStorage.setItem(SK, JSON.stringify(d)); } catch(e) {} }
@@ -294,11 +295,7 @@ window.initMap = function() {
     map.setOptions({styles: e.target.value==='roadmap' ? mapStyle : []});
   });
 
-  // Switch between heatmap and dots on zoom change; also rescale heatmap radius
-  map.addListener('zoom_changed', () => {
-    if(heatmap) heatmap.set('radius', heatRadius(map.getZoom()));
-    onZoomChange();
-  });
+  map.addListener('zoom_changed', onZoomChange);
 
   // Re-render visible dots when map is idle (after pan/zoom)
   map.addListener('idle', () => {
@@ -312,19 +309,19 @@ function onZoomChange() {
   const zoom = map.getZoom();
   const hint = document.getElementById('zoom-hint');
   if (zoom >= DOT_ZOOM) {
-    // Switch to dots
-    if (heatmap) heatmap.setMap(null);
+    // Switch to individual dots — hide circles
+    zipCircles.forEach(c => c.setMap(null));
     hint.style.opacity = '0';
     document.getElementById('legend-title').textContent = 'Period Revenue';
     document.getElementById('legend-heat').style.display = 'none';
     document.getElementById('legend-dots').style.display = '';
     document.getElementById('s-view-wrap').style.display = '';
   } else {
-    // Switch to heatmap
+    // Switch to zip circles — hide dots
     clearDots();
-    if (heatmap) heatmap.setMap(map);
+    zipCircles.forEach(c => c.setMap(map));
     hint.style.opacity = '1';
-    document.getElementById('legend-title').textContent = 'Revenue Density';
+    document.getElementById('legend-title').textContent = 'Revenue by ZIP';
     document.getElementById('legend-heat').style.display = '';
     document.getElementById('legend-dots').style.display = 'none';
     document.getElementById('s-view-wrap').style.display = 'none';
@@ -379,7 +376,7 @@ function applyFilters() {
   document.getElementById('s-rev').textContent  = fmt(tRev);
   document.getElementById('s-life').textContent = fmt(tLife);
 
-  rebuildHeatmap();
+  buildZipCircles();
 
   if(map.getZoom() >= DOT_ZOOM) {
     renderVisibleDots();
@@ -399,53 +396,66 @@ function applyFilters() {
 
 ['yr','mo','bu'].forEach(id => document.getElementById(id).addEventListener('change', applyFilters));
 
-// ── Heatmap ───────────────────────────────────────────────
-
-// Radius in pixels per zoom level — larger when zoomed out so coverage is visible
-function heatRadius(zoom) {
-  const table = {6:220,7:190,8:160,9:130,10:105,11:80,12:55,13:35,14:22};
-  return table[zoom] ?? (zoom < 6 ? 250 : 16);
+// ── Zip circle overview (replaces heatmap) ────────────────
+function clearZipCircles() {
+  zipCircles.forEach(c => c.setMap(null));
+  zipCircles = [];
 }
 
-function rebuildHeatmap() {
-  if(heatmap) { heatmap.setMap(null); heatmap = null; }
+function buildZipCircles() {
+  clearZipCircles();
   if(!currentFiltered.length) return;
 
-  // Group by zip and spread each group in a tight spiral so the zip area is covered
+  // Aggregate by zip
   const byZip = {};
-  currentFiltered.forEach((c, i) => { (byZip[c.zip] = byZip[c.zip] || []).push(c); });
+  currentFiltered.forEach(c => {
+    if(!c.lat || !c.lng) return;
+    if(!byZip[c.zip]) byZip[c.zip] = { lat:c.lat, lng:c.lng, count:0, rev:0 };
+    byZip[c.zip].count++;
+    byZip[c.zip].rev += c.completedRevenue || 0;
+  });
 
-  const spread = [];
-  Object.values(byZip).forEach(group => {
-    group.forEach((c, i) => {
-      const angle = (i * 2.39996) % (2 * Math.PI); // golden angle — even coverage
-      const r = 0.008 * Math.sqrt(i + 1);           // ~800m max radius
-      spread.push({
-        location: new google.maps.LatLng(
-          c.lat + r * Math.cos(angle),
-          c.lng + r * Math.sin(angle)
-        ),
-        weight: 1, // equal weight — count-based, not revenue-based
-      });
+  const maxCount = Math.max(...Object.values(byZip).map(z => z.count));
+
+  Object.values(byZip).forEach(z => {
+    // Radius scales from 800m (1 customer) to 4000m (max customers)
+    const radiusM = 800 + (z.count / maxCount) * 3200;
+
+    // Color by average revenue per customer in this zip
+    const avg = z.rev / z.count;
+    const fillColor = avg > 5000 ? '#e63946'
+                    : avg > 2000 ? '#f4522a'
+                    : avg > 500  ? '#ff9500'
+                    : avg > 0    ? '#ffcc00'
+                    :              '#cccccc';
+
+    const circle = new google.maps.Circle({
+      map: map.getZoom() < DOT_ZOOM ? map : null,
+      center: { lat: z.lat, lng: z.lng },
+      radius: radiusM,
+      fillColor,
+      fillOpacity: 0.45,
+      strokeColor: fillColor,
+      strokeOpacity: 0.9,
+      strokeWeight: 2,
+      zIndex: 1,
     });
-  });
 
-  heatmap = new google.maps.visualization.HeatmapLayer({
-    data: spread,
-    radius: heatRadius(map.getZoom()),
-    opacity: 0.92,
-    maxIntensity: 6,  // saturates at just 6 customers — everything is visible
-    gradient: [
-      'rgba(255,240,80,0)',    // invisible below threshold
-      'rgba(255,240,80,1)',    // bright yellow — even 1-2 customers
-      'rgba(255,180,0,1)',     // gold
-      'rgba(255,100,0,1)',     // orange
-      'rgba(230,20,0,1)',      // red
-      'rgba(150,0,0,1)',       // dark red — dense areas
-    ],
-  });
+    // Tooltip on hover
+    const hw = `
+      <div style="font-family:Arial,sans-serif;padding:2px;min-width:180px;">
+        <div style="font-size:13px;font-weight:700;margin-bottom:6px;">ZIP ${Object.keys(byZip).find(k=>byZip[k]===z)}</div>
+        <table style="font-size:12px;width:100%;border-collapse:collapse;">
+          <tr><td style="color:#666;">Customers</td><td style="text-align:right;font-weight:700;">${z.count}</td></tr>
+          <tr><td style="color:#666;">Period Revenue</td><td style="text-align:right;font-weight:700;color:#e94560;">${fmt(z.rev)}</td></tr>
+          <tr><td style="color:#666;">Avg per Customer</td><td style="text-align:right;">${fmt(z.rev/z.count)}</td></tr>
+        </table>
+      </div>`;
 
-  if(map.getZoom() < DOT_ZOOM) heatmap.setMap(map);
+    circle.addListener('mouseover', e => { iw.setContent(hw); iw.setPosition(e.latLng); iw.open(map); });
+    circle.addListener('mouseout',  ()  => iw.close());
+    zipCircles.push(circle);
+  });
 }
 
 // ── Individual dots (viewport-only for performance) ───────
@@ -755,7 +765,6 @@ function esc(s){return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').
 <script>
   async function bootstrap(){
     await google.maps.importLibrary("maps");
-    await google.maps.importLibrary("visualization");
     await google.maps.importLibrary("geometry");
     initMap();
   }
