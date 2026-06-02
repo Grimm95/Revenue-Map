@@ -189,7 +189,7 @@
   <div id="legend">
     <div class="ltitle" id="legend-title">Revenue Density</div>
     <div id="legend-heat">
-      <div class="lrow"><div style="width:80px;height:10px;border-radius:4px;background:linear-gradient(90deg,#4575b4,#74add1,#abd9e9,#fdae61,#f46d43,#d73027);"></div></div>
+      <div class="lrow"><div style="width:80px;height:10px;border-radius:4px;background:linear-gradient(90deg,#fff566,#ffc800,#ff7800,#ff2800,#b40000);"></div></div>
       <div style="display:flex;justify-content:space-between;font-size:10px;color:#888;width:80px;margin-top:2px;">
         <span>Low</span><span>High</span>
       </div>
@@ -408,16 +408,15 @@ function rebuildHeatmap() {
 
   heatmap = new google.maps.visualization.HeatmapLayer({
     data: pts,
-    radius: 35,
-    opacity: 0.75,
+    radius: 40,
+    opacity: 0.85,
     gradient: [
-      'rgba(0,0,255,0)',
-      'rgba(69,117,180,0.6)',
-      'rgba(116,173,209,0.8)',
-      'rgba(254,224,144,0.9)',
-      'rgba(244,109,67,1)',
-      'rgba(215,48,39,1)',
-      'rgba(165,0,38,1)',
+      'rgba(255,255,255,0)',
+      'rgba(255,245,100,0.5)',
+      'rgba(255,200,0,0.75)',
+      'rgba(255,120,0,0.9)',
+      'rgba(255,40,0,1)',
+      'rgba(180,0,0,1)',
     ],
   });
 
