@@ -294,8 +294,11 @@ window.initMap = function() {
     map.setOptions({styles: e.target.value==='roadmap' ? mapStyle : []});
   });
 
-  // Switch between heatmap and dots on zoom change
-  map.addListener('zoom_changed', onZoomChange);
+  // Switch between heatmap and dots on zoom change; also rescale heatmap radius
+  map.addListener('zoom_changed', () => {
+    if(heatmap) heatmap.set('radius', heatRadius(map.getZoom()));
+    onZoomChange();
+  });
 
   // Re-render visible dots when map is idle (after pan/zoom)
   map.addListener('idle', () => {
@@ -397,24 +400,37 @@ function applyFilters() {
 ['yr','mo','bu'].forEach(id => document.getElementById(id).addEventListener('change', applyFilters));
 
 // ── Heatmap ───────────────────────────────────────────────
+
+// Radius in pixels per zoom level — larger when zoomed out so coverage is visible
+function heatRadius(zoom) {
+  const table = {6:220,7:190,8:160,9:130,10:105,11:80,12:55,13:35,14:22};
+  return table[zoom] ?? (zoom < 6 ? 250 : 16);
+}
+
 function rebuildHeatmap() {
   if(heatmap) { heatmap.setMap(null); heatmap = null; }
   if(!currentFiltered.length) return;
 
-  const pts = currentFiltered.map(c => ({
-    location: new google.maps.LatLng(c.lat, c.lng),
-    weight: Math.max(0.1, (c.completedRevenue||0) / 500),
-  }));
+  // Spread points within each zip so they fan out and cover the area
+  const spread = currentFiltered.map((c, i) => {
+    const angle = (i * 2.4) % (2 * Math.PI); // golden-angle spiral
+    const r = 0.006 * Math.sqrt(i % 60);     // max ~600m spread per zip group
+    return {
+      location: new google.maps.LatLng(c.lat + r * Math.cos(angle), c.lng + r * Math.sin(angle)),
+      weight: Math.max(0.5, (c.completedRevenue || 0) / 300),
+    };
+  });
 
   heatmap = new google.maps.visualization.HeatmapLayer({
-    data: pts,
-    radius: 40,
-    opacity: 0.85,
+    data: spread,
+    radius: heatRadius(map.getZoom()),
+    opacity: 0.88,
+    maxIntensity: 20,
     gradient: [
       'rgba(255,255,255,0)',
-      'rgba(255,245,100,0.5)',
-      'rgba(255,200,0,0.75)',
-      'rgba(255,120,0,0.9)',
+      'rgba(255,245,100,0.6)',
+      'rgba(255,200,0,0.8)',
+      'rgba(255,120,0,0.92)',
       'rgba(255,40,0,1)',
       'rgba(180,0,0,1)',
     ],
