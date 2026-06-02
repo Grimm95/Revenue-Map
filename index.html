@@ -120,6 +120,36 @@
       transition: opacity .4s;
     }
 
+    #search-bar {
+      position: absolute; top: 12px; right: 52px;
+      display: flex; gap: 6px; z-index: 10;
+    }
+
+    #search-input {
+      width: 260px; padding: 7px 12px; border-radius: 6px;
+      border: 1px solid #d0d5dd; font-size: 13px; color: #222;
+      box-shadow: 0 2px 6px rgba(0,0,0,0.12);
+      outline: none;
+    }
+
+    #search-input:focus { border-color: #e94560; }
+
+    #search-btn {
+      background: #1a1a2e; color: #fff; border: none;
+      padding: 7px 13px; border-radius: 6px; cursor: pointer;
+      font-size: 13px; font-weight: 600;
+      box-shadow: 0 2px 6px rgba(0,0,0,0.15);
+    }
+    #search-btn:hover { background: #2e2e50; }
+
+    #clear-pin-btn {
+      background: #fff; color: #e94560; border: 1px solid #e94560;
+      padding: 7px 11px; border-radius: 6px; cursor: pointer;
+      font-size: 13px; font-weight: 600; display: none;
+      box-shadow: 0 2px 6px rgba(0,0,0,0.1);
+    }
+    #clear-pin-btn:hover { background: #fef0f2; }
+
     #bu-fg { display: none; }
   </style>
 </head>
@@ -151,6 +181,11 @@
 <div style="position:relative;flex:1;display:flex;">
   <div id="map" style="flex:1;"></div>
   <div id="zoom-hint">🔍 Zoom in to street level to see individual customer pins</div>
+  <div id="search-bar">
+    <input id="search-input" type="text" placeholder="🔎  Search address or zip code…" />
+    <button id="search-btn">Drop Pin</button>
+    <button id="clear-pin-btn">✕ Clear Pin</button>
+  </div>
   <div id="legend">
     <div class="ltitle" id="legend-title">Revenue Density</div>
     <div id="legend-heat">
@@ -221,10 +256,11 @@ const SK = 'rev_dash_v3';
 const MN = ['','January','February','March','April','May','June','July','August','September','October','November','December'];
 const DOT_ZOOM = 13; // zoom level where we switch from heatmap to individual dots
 
-let map, iw, heatmap;
+let map, iw, heatmap, geocoder;
 let allC = [];          // all customers (with lat/lng)
 let activeMarkers = []; // currently rendered dot markers
 let currentFiltered = []; // filtered dataset cache
+let droppedPin = null;  // user's custom search pin
 
 function ls()  { try { return JSON.parse(localStorage.getItem(SK)) || {uploads:[],zips:{}}; } catch { return {uploads:[],zips:{}}; } }
 function ss(d) { try { localStorage.setItem(SK, JSON.stringify(d)); } catch(e) {} }
@@ -250,6 +286,7 @@ window.initMap = function() {
   });
 
   iw = new google.maps.InfoWindow({maxWidth:260});
+  geocoder = new google.maps.Geocoder();
 
   // Map type switcher
   document.getElementById('mtype').addEventListener('change', e => {
@@ -558,6 +595,96 @@ function prog(pct,text){
 }
 function sleep(ms){return new Promise(r=>setTimeout(r,ms));}
 
+// ── Address search & drop pin ─────────────────────────────
+function dropSearchPin(address) {
+  if(!address.trim()) return;
+  const btn = document.getElementById('search-btn');
+  btn.textContent = 'Searching…';
+  btn.disabled = true;
+
+  geocoder.geocode({ address }, (results, status) => {
+    btn.textContent = 'Drop Pin';
+    btn.disabled = false;
+
+    if(status !== 'OK' || !results.length) {
+      alert('Address not found. Try adding a city or zip code.');
+      return;
+    }
+
+    const loc = results[0].geometry.location;
+    const formattedAddress = results[0].formatted_address;
+
+    // Remove previous dropped pin
+    if(droppedPin) droppedPin.setMap(null);
+
+    droppedPin = new google.maps.Marker({
+      position: loc,
+      map,
+      title: formattedAddress,
+      zIndex: 999,
+      icon: {
+        path: 'M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5c-1.38 0-2.5-1.12-2.5-2.5s1.12-2.5 2.5-2.5 2.5 1.12 2.5 2.5-1.12 2.5-2.5 2.5z',
+        fillColor: '#4A90E2',
+        fillOpacity: 1,
+        strokeColor: '#fff',
+        strokeWeight: 2,
+        scale: 1.6,
+        anchor: new google.maps.Point(12, 22),
+      },
+    });
+
+    // Find nearby customers (within ~1 mile radius)
+    const R = 1609; // 1 mile in meters
+    const nearby = currentFiltered.filter(c => {
+      if(!c.lat || !c.lng) return false;
+      const d = google.maps.geometry.spherical.computeDistanceBetween(
+        loc, new google.maps.LatLng(c.lat, c.lng)
+      );
+      return d <= R;
+    });
+
+    const nearbyRev = nearby.reduce((s,c) => s+(c.completedRevenue||0), 0);
+
+    const html = `
+      <div style="font-family:Arial,sans-serif;padding:2px;min-width:230px;">
+        <div style="font-size:13px;font-weight:700;color:#1a1a2e;margin-bottom:6px;">📍 ${esc(formattedAddress)}</div>
+        <div style="background:#f0f5ff;border-radius:6px;padding:8px 10px;margin-top:4px;">
+          <div style="font-size:11px;color:#888;text-transform:uppercase;letter-spacing:.5px;font-weight:700;margin-bottom:6px;">Within 1 mile</div>
+          <table style="font-size:12px;width:100%;border-collapse:collapse;">
+            <tr><td style="color:#666;padding:2px 0;">Customers nearby</td>
+                <td style="text-align:right;font-weight:700;color:#4A90E2;">${nearby.length}</td></tr>
+            <tr><td style="color:#666;padding:2px 0;">Period Revenue</td>
+                <td style="text-align:right;font-weight:700;color:#e94560;">${fmt(nearbyRev)}</td></tr>
+          </table>
+        </div>
+        <div style="font-size:11px;color:#aaa;margin-top:8px;text-align:center;">Click "✕ Clear Pin" in toolbar to remove</div>
+      </div>`;
+
+    iw.setContent(html);
+    iw.open(map, droppedPin);
+    droppedPin.addListener('click', () => { iw.setContent(html); iw.open(map, droppedPin); });
+
+    document.getElementById('clear-pin-btn').style.display = 'block';
+    map.panTo(loc);
+    if(map.getZoom() < 13) map.setZoom(13);
+  });
+}
+
+document.getElementById('search-btn').addEventListener('click', () =>
+  dropSearchPin(document.getElementById('search-input').value)
+);
+
+document.getElementById('search-input').addEventListener('keydown', e => {
+  if(e.key === 'Enter') dropSearchPin(e.target.value);
+});
+
+document.getElementById('clear-pin-btn').addEventListener('click', () => {
+  if(droppedPin) { droppedPin.setMap(null); droppedPin = null; }
+  iw.close();
+  document.getElementById('clear-pin-btn').style.display = 'none';
+  document.getElementById('search-input').value = '';
+});
+
 // ── Manage ────────────────────────────────────────────────
 document.getElementById('manage-btn').addEventListener('click',()=>{ buildUList(); document.getElementById('mg-modal').classList.add('open'); });
 document.getElementById('close-mg-btn').addEventListener('click',()=> document.getElementById('mg-modal').classList.remove('open'));
@@ -605,6 +732,7 @@ function esc(s){return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').
   async function bootstrap(){
     await google.maps.importLibrary("maps");
     await google.maps.importLibrary("visualization");
+    await google.maps.importLibrary("geometry");
     initMap();
   }
   bootstrap();
