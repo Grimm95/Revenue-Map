@@ -411,28 +411,37 @@ function rebuildHeatmap() {
   if(heatmap) { heatmap.setMap(null); heatmap = null; }
   if(!currentFiltered.length) return;
 
-  // Spread points within each zip so they fan out and cover the area
-  const spread = currentFiltered.map((c, i) => {
-    const angle = (i * 2.4) % (2 * Math.PI); // golden-angle spiral
-    const r = 0.006 * Math.sqrt(i % 60);     // max ~600m spread per zip group
-    return {
-      location: new google.maps.LatLng(c.lat + r * Math.cos(angle), c.lng + r * Math.sin(angle)),
-      weight: Math.max(0.5, (c.completedRevenue || 0) / 300),
-    };
+  // Group by zip and spread each group in a tight spiral so the zip area is covered
+  const byZip = {};
+  currentFiltered.forEach((c, i) => { (byZip[c.zip] = byZip[c.zip] || []).push(c); });
+
+  const spread = [];
+  Object.values(byZip).forEach(group => {
+    group.forEach((c, i) => {
+      const angle = (i * 2.39996) % (2 * Math.PI); // golden angle — even coverage
+      const r = 0.008 * Math.sqrt(i + 1);           // ~800m max radius
+      spread.push({
+        location: new google.maps.LatLng(
+          c.lat + r * Math.cos(angle),
+          c.lng + r * Math.sin(angle)
+        ),
+        weight: 1, // equal weight — count-based, not revenue-based
+      });
+    });
   });
 
   heatmap = new google.maps.visualization.HeatmapLayer({
     data: spread,
     radius: heatRadius(map.getZoom()),
-    opacity: 0.88,
-    maxIntensity: 20,
+    opacity: 0.92,
+    maxIntensity: 6,  // saturates at just 6 customers — everything is visible
     gradient: [
-      'rgba(255,255,255,0)',
-      'rgba(255,245,100,0.6)',
-      'rgba(255,200,0,0.8)',
-      'rgba(255,120,0,0.92)',
-      'rgba(255,40,0,1)',
-      'rgba(180,0,0,1)',
+      'rgba(255,240,80,0)',    // invisible below threshold
+      'rgba(255,240,80,1)',    // bright yellow — even 1-2 customers
+      'rgba(255,180,0,1)',     // gold
+      'rgba(255,100,0,1)',     // orange
+      'rgba(230,20,0,1)',      // red
+      'rgba(150,0,0,1)',       // dark red — dense areas
     ],
   });
 
