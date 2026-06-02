@@ -33,7 +33,6 @@
     h1 span { color: #e94560; }
 
     .filters { display: flex; gap: 10px; align-items: flex-end; flex-wrap: wrap; flex: 1; }
-
     .fg { display: flex; flex-direction: column; gap: 3px; }
     .fg label { font-size: 10px; color: #999; text-transform: uppercase; letter-spacing: .5px; font-weight: 600; }
 
@@ -114,6 +113,13 @@
     .lrow   { display: flex; align-items: center; gap: 7px; margin-bottom: 4px; color: #444; }
     .ldot   { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
 
+    #zoom-hint {
+      position: absolute; top: 12px; left: 50%; transform: translateX(-50%);
+      background: rgba(26,26,46,0.82); color: #fff; font-size: 12px;
+      padding: 6px 14px; border-radius: 20px; z-index: 10; pointer-events: none;
+      transition: opacity .4s;
+    }
+
     #bu-fg { display: none; }
   </style>
 </head>
@@ -144,20 +150,30 @@
 
 <div style="position:relative;flex:1;display:flex;">
   <div id="map" style="flex:1;"></div>
+  <div id="zoom-hint">🔍 Zoom in to street level to see individual customer pins</div>
   <div id="legend">
-    <div class="ltitle">Period Revenue</div>
-    <div class="lrow"><div class="ldot" style="background:#e94560;"></div>&gt; $5,000</div>
-    <div class="lrow"><div class="ldot" style="background:#f4a261;"></div>$1,000 – $5,000</div>
-    <div class="lrow"><div class="ldot" style="background:#2a9d8f;"></div>&lt; $1,000</div>
-    <div class="lrow"><div class="ldot" style="background:#bbb;"></div>$0 / No activity</div>
+    <div class="ltitle" id="legend-title">Revenue Density</div>
+    <div id="legend-heat">
+      <div class="lrow"><div style="width:80px;height:10px;border-radius:4px;background:linear-gradient(90deg,#4575b4,#74add1,#abd9e9,#fdae61,#f46d43,#d73027);"></div></div>
+      <div style="display:flex;justify-content:space-between;font-size:10px;color:#888;width:80px;margin-top:2px;">
+        <span>Low</span><span>High</span>
+      </div>
+    </div>
+    <div id="legend-dots" style="display:none;">
+      <div class="lrow"><div class="ldot" style="background:#e94560;"></div>&gt; $5,000</div>
+      <div class="lrow"><div class="ldot" style="background:#f4a261;"></div>$1,000 – $5,000</div>
+      <div class="lrow"><div class="ldot" style="background:#2a9d8f;"></div>&lt; $1,000</div>
+      <div class="lrow"><div class="ldot" style="background:#bbb;"></div>$0 / No activity</div>
+    </div>
   </div>
 </div>
 
 <div id="status-bar">
-  <div class="si"><span>Pins:</span><span class="sv" id="s-pins">0</span></div>
+  <div class="si"><span>Customers:</span><span class="sv" id="s-pins">0</span></div>
   <div class="si"><span>Period Revenue:</span><span class="sv red" id="s-rev">$0</span></div>
   <div class="si"><span>Lifetime Revenue:</span><span class="sv" id="s-life">$0</span></div>
   <div class="si"><span>Uploads:</span><span class="sv" id="s-up">0</span></div>
+  <div class="si" id="s-view-wrap" style="display:none;"><span>Visible pins:</span><span class="sv" id="s-view">0</span></div>
 </div>
 
 <!-- Upload modal -->
@@ -203,42 +219,79 @@
 <script>
 const SK = 'rev_dash_v3';
 const MN = ['','January','February','March','April','May','June','July','August','September','October','November','December'];
+const DOT_ZOOM = 13; // zoom level where we switch from heatmap to individual dots
 
-let map, iw;
-let allC = [];
-let pins = [];
+let map, iw, heatmap;
+let allC = [];          // all customers (with lat/lng)
+let activeMarkers = []; // currently rendered dot markers
+let currentFiltered = []; // filtered dataset cache
 
 function ls()  { try { return JSON.parse(localStorage.getItem(SK)) || {uploads:[],zips:{}}; } catch { return {uploads:[],zips:{}}; } }
 function ss(d) { try { localStorage.setItem(SK, JSON.stringify(d)); } catch(e) {} }
 
+// ── Map init ──────────────────────────────────────────────
 window.initMap = function() {
-  const style = [
-    {featureType:'poi',     elementType:'all',           stylers:[{visibility:'off'}]},
-    {featureType:'transit', elementType:'all',           stylers:[{visibility:'off'}]},
-    {featureType:'road',    elementType:'labels.icon',   stylers:[{visibility:'off'}]},
-    {featureType:'landscape',elementType:'geometry',     stylers:[{color:'#f5f5f0'}]},
-    {featureType:'water',   elementType:'geometry',      stylers:[{color:'#aee0f4'}]},
-    {featureType:'road.highway',elementType:'geometry',  stylers:[{color:'#ffe082'}]},
-    {featureType:'road.arterial',elementType:'geometry', stylers:[{color:'#ffffff'}]},
-    {featureType:'road.local',  elementType:'geometry',  stylers:[{color:'#f8f8f8'}]},
+  const mapStyle = [
+    {featureType:'poi',      elementType:'all',            stylers:[{visibility:'off'}]},
+    {featureType:'transit',  elementType:'all',            stylers:[{visibility:'off'}]},
+    {featureType:'road',     elementType:'labels.icon',    stylers:[{visibility:'off'}]},
+    {featureType:'landscape',elementType:'geometry',       stylers:[{color:'#f5f5f0'}]},
+    {featureType:'water',    elementType:'geometry',       stylers:[{color:'#aee0f4'}]},
+    {featureType:'road.highway',  elementType:'geometry',  stylers:[{color:'#ffe082'}]},
+    {featureType:'road.arterial', elementType:'geometry',  stylers:[{color:'#ffffff'}]},
+    {featureType:'road.local',    elementType:'geometry',  stylers:[{color:'#f8f8f8'}]},
   ];
 
   map = new google.maps.Map(document.getElementById('map'), {
-    center:{lat:32.82,lng:-79.95}, zoom:11,
-    mapTypeId:'roadmap', styles:style,
+    center:{lat:32.82,lng:-79.95}, zoom:10,
+    mapTypeId:'roadmap', styles:mapStyle,
     mapTypeControl:false, streetViewControl:false, fullscreenControl:true,
+    gestureHandling:'greedy',
   });
 
   iw = new google.maps.InfoWindow({maxWidth:260});
 
+  // Map type switcher
   document.getElementById('mtype').addEventListener('change', e => {
     map.setMapTypeId(e.target.value);
-    map.setOptions({styles: e.target.value==='roadmap' ? style : []});
+    map.setOptions({styles: e.target.value==='roadmap' ? mapStyle : []});
+  });
+
+  // Switch between heatmap and dots on zoom change
+  map.addListener('zoom_changed', onZoomChange);
+
+  // Re-render visible dots when map is idle (after pan/zoom)
+  map.addListener('idle', () => {
+    if (map.getZoom() >= DOT_ZOOM) renderVisibleDots();
   });
 
   loadAndRender();
 };
 
+function onZoomChange() {
+  const zoom = map.getZoom();
+  const hint = document.getElementById('zoom-hint');
+  if (zoom >= DOT_ZOOM) {
+    // Switch to dots
+    if (heatmap) heatmap.setMap(null);
+    hint.style.opacity = '0';
+    document.getElementById('legend-title').textContent = 'Period Revenue';
+    document.getElementById('legend-heat').style.display = 'none';
+    document.getElementById('legend-dots').style.display = '';
+    document.getElementById('s-view-wrap').style.display = '';
+  } else {
+    // Switch to heatmap
+    clearDots();
+    if (heatmap) heatmap.setMap(map);
+    hint.style.opacity = '1';
+    document.getElementById('legend-title').textContent = 'Revenue Density';
+    document.getElementById('legend-heat').style.display = '';
+    document.getElementById('legend-dots').style.display = 'none';
+    document.getElementById('s-view-wrap').style.display = 'none';
+  }
+}
+
+// ── Data load ─────────────────────────────────────────────
 function loadAndRender() {
   const d = ls();
   allC = [];
@@ -246,15 +299,15 @@ function loadAndRender() {
     allC.push({...c, uploadMonth:u.month, uploadYear:u.year, uploadLabel:u.label})
   ));
   buildFilters();
-  render();
+  applyFilters();
   document.getElementById('s-up').textContent = d.uploads.length;
 }
 
 function buildFilters() {
   const months=new Set(), years=new Set(), bus=new Set();
   allC.forEach(c => { months.add(c.uploadMonth); years.add(c.uploadYear); if(c.businessUnit) bus.add(c.businessUnit); });
-  fill('yr', [...years].sort(),           v=>v, v=>v);
-  fill('mo', [...months].sort((a,b)=>a-b), v=>v, v=>MN[v]);
+  fill('yr', [...years].sort(),             v=>v, v=>v);
+  fill('mo', [...months].sort((a,b)=>a-b),  v=>v, v=>MN[v]);
   const bg = document.getElementById('bu-fg');
   if(bus.size>0) { bg.style.display=''; fill('bu',[...bus].sort(),v=>v,v=>v); }
   else bg.style.display='none';
@@ -267,53 +320,118 @@ function fill(id, vals, vFn, lFn) {
   s.value=cur;
 }
 
-function filtered() {
+function applyFilters() {
   const mo=document.getElementById('mo').value;
   const yr=document.getElementById('yr').value;
   const bu=document.getElementById('bu').value;
-  return allC.filter(c => {
+
+  currentFiltered = allC.filter(c => {
     if(yr!=='all' && String(c.uploadYear)!==String(yr))   return false;
     if(mo!=='all' && String(c.uploadMonth)!==String(mo))  return false;
     if(bu!=='all' && c.businessUnit!==bu)                  return false;
     return c.lat!=null && c.lng!=null;
   });
+
+  // Update stats
+  let tRev=0, tLife=0;
+  currentFiltered.forEach(c=>{ tRev+=c.completedRevenue||0; tLife+=c.lifetimeRevenue||0; });
+  document.getElementById('s-pins').textContent = currentFiltered.length;
+  document.getElementById('s-rev').textContent  = fmt(tRev);
+  document.getElementById('s-life').textContent = fmt(tLife);
+
+  rebuildHeatmap();
+
+  if(map.getZoom() >= DOT_ZOOM) {
+    renderVisibleDots();
+  } else {
+    clearDots();
+    if(heatmap) heatmap.setMap(map);
+    document.getElementById('zoom-hint').style.opacity='1';
+  }
+
+  // Fit bounds to data
+  if(currentFiltered.length > 0) {
+    const bounds = new google.maps.LatLngBounds();
+    currentFiltered.forEach(c => bounds.extend({lat:c.lat,lng:c.lng}));
+    map.fitBounds(bounds);
+  }
 }
 
-// Spiral-spread customers that share the same zip centroid
+['yr','mo','bu'].forEach(id => document.getElementById(id).addEventListener('change', applyFilters));
+
+// ── Heatmap ───────────────────────────────────────────────
+function rebuildHeatmap() {
+  if(heatmap) { heatmap.setMap(null); heatmap = null; }
+  if(!currentFiltered.length) return;
+
+  const pts = currentFiltered.map(c => ({
+    location: new google.maps.LatLng(c.lat, c.lng),
+    weight: Math.max(0.1, (c.completedRevenue||0) / 500),
+  }));
+
+  heatmap = new google.maps.visualization.HeatmapLayer({
+    data: pts,
+    radius: 35,
+    opacity: 0.75,
+    gradient: [
+      'rgba(0,0,255,0)',
+      'rgba(69,117,180,0.6)',
+      'rgba(116,173,209,0.8)',
+      'rgba(254,224,144,0.9)',
+      'rgba(244,109,67,1)',
+      'rgba(215,48,39,1)',
+      'rgba(165,0,38,1)',
+    ],
+  });
+
+  if(map.getZoom() < DOT_ZOOM) heatmap.setMap(map);
+}
+
+// ── Individual dots (viewport-only for performance) ───────
 function spread(list) {
   const b={};
   list.forEach(c => { const k=c.zip; (b[k]=b[k]||[]).push(c); });
   Object.values(b).forEach(g => {
     g.forEach((c,i) => {
-      // deterministic offset per index so same file always looks the same
-      const angle = (i/Math.max(g.length,1))*2*Math.PI + (i*0.3);
-      const r = 0.002 * Math.sqrt(i+1);   // grows outward so dense zips fan out nicely
+      const angle = (i / Math.max(g.length,1)) * 2 * Math.PI + (i * 0.4);
+      const r = 0.0004 * Math.sqrt(i+1);
       c.lat = c.lat + r*Math.cos(angle);
       c.lng = c.lng + r*Math.sin(angle);
     });
   });
 }
 
-function render() {
-  pins.forEach(m=>m.setMap(null)); pins=[];
-  const list = filtered().map(c=>({...c}));
-  spread(list);
-  const bounds = new google.maps.LatLngBounds();
-  let tRev=0, tLife=0;
+function clearDots() {
+  activeMarkers.forEach(m => m.setMap(null));
+  activeMarkers = [];
+}
 
-  list.forEach(c => {
+function renderVisibleDots() {
+  clearDots();
+  const bounds = map.getBounds();
+  if(!bounds) return;
+
+  // Only render customers visible in the current viewport
+  const visible = currentFiltered
+    .filter(c => bounds.contains({lat:c.lat, lng:c.lng}))
+    .map(c => ({...c}));
+
+  spread(visible);
+
+  visible.forEach(c => {
     const rev  = c.completedRevenue||0;
     const life = c.lifetimeRevenue||0;
-    tRev+=rev; tLife+=life;
     const color = rev>5000?'#e94560': rev>1000?'#f4a261': rev>0?'#2a9d8f':'#bbbbbb';
 
     const m = new google.maps.Marker({
       position:{lat:c.lat,lng:c.lng}, map,
       title:c.customerName,
       icon:{
-        path:google.maps.SymbolPath.CIRCLE,
-        scale:5, fillColor:color, fillOpacity:1,
-        strokeColor:'#fff', strokeWeight:1.5,
+        path: google.maps.SymbolPath.CIRCLE,
+        scale: 4,
+        fillColor: color,
+        fillOpacity: 0.9,
+        strokeWeight: 0,
       },
     });
 
@@ -335,33 +453,16 @@ function render() {
         </table>
       </div>`;
 
-    m.addListener('mouseover',()=>{iw.setContent(html);iw.open(map,m);});
+    m.addListener('mouseover',()=>{ iw.setContent(html); iw.open(map,m); });
     m.addListener('mouseout', ()=>iw.close());
-    m.addListener('click',    ()=>{iw.setContent(html);iw.open(map,m);});
-    pins.push(m);
-    bounds.extend({lat:c.lat,lng:c.lng});
+    m.addListener('click',    ()=>{ iw.setContent(html); iw.open(map,m); });
+    activeMarkers.push(m);
   });
 
-  if(list.length>0 && !bounds.isEmpty()) map.fitBounds(bounds);
-  document.getElementById('s-pins').textContent = list.length;
-  document.getElementById('s-rev').textContent  = fmt(tRev);
-  document.getElementById('s-life').textContent = fmt(tLife);
+  document.getElementById('s-view').textContent = visible.length;
 }
 
-['yr','mo','bu'].forEach(id=>document.getElementById(id).addEventListener('change',render));
-
-// ── Zippopotam.us zip geocode (free, no key, parallel-friendly) ──
-async function geocodeZip(zip) {
-  try {
-    const res=await fetch(`https://api.zippopotam.us/us/${zip}`);
-    if(!res.ok) return null;
-    const d=await res.json();
-    if(d.places&&d.places[0]) return {lat:parseFloat(d.places[0].latitude),lng:parseFloat(d.places[0].longitude)};
-  } catch {}
-  return null;
-}
-
-// ── Upload ──
+// ── Upload ────────────────────────────────────────────────
 document.getElementById('upload-btn').addEventListener('click',()=>{
   const now=new Date();
   document.getElementById('up-mo').value=now.getMonth()+1;
@@ -403,22 +504,21 @@ document.getElementById('confirm-btn').addEventListener('click', async()=>{
       lat:null, lng:null,
     })).filter(c=>c.zip.length>=4);
 
-    // Geocode unique zip codes in parallel batches (fast)
     const store=ls();
     const uniqueZips=[...new Set(customers.map(c=>c.zip))].filter(z=>!store.zips[z]);
-    const BATCH=10; // 10 concurrent requests per batch
+    const BATCH=10;
     let zdone=0;
+
     for(let i=0;i<uniqueZips.length;i+=BATCH){
       const batch=uniqueZips.slice(i,i+BATCH);
       const results=await Promise.all(batch.map(z=>geocodeZip(z)));
       batch.forEach((z,j)=>{ if(results[j]) store.zips[z]=results[j]; });
       zdone+=batch.length;
-      prog(5+Math.round((zdone/Math.max(uniqueZips.length,1))*60),
+      prog(5+Math.round((zdone/Math.max(uniqueZips.length,1))*75),
         `Geocoding zips ${zdone}/${uniqueZips.length}…`);
-      if(i+BATCH<uniqueZips.length) await sleep(300); // brief pause between batches
+      if(i+BATCH<uniqueZips.length) await sleep(300);
     }
 
-    // Assign lat/lng from zip lookup
     let placed=0;
     customers.forEach(c=>{
       const zp=store.zips[c.zip];
@@ -426,7 +526,6 @@ document.getElementById('confirm-btn').addEventListener('click', async()=>{
     });
 
     prog(90,`Placed ${placed} of ${customers.length} customers`);
-
     store.uploads=store.uploads.filter(u=>!(u.month===month&&u.year===year));
     store.uploads.push({id:Date.now(),month,year,label,uploadedAt:new Date().toISOString(),customers});
     ss(store);
@@ -443,19 +542,25 @@ document.getElementById('confirm-btn').addEventListener('click', async()=>{
   }
 });
 
+async function geocodeZip(zip) {
+  try {
+    const res=await fetch(`https://api.zippopotam.us/us/${zip}`);
+    if(!res.ok) return null;
+    const d=await res.json();
+    if(d.places&&d.places[0]) return {lat:parseFloat(d.places[0].latitude),lng:parseFloat(d.places[0].longitude)};
+  } catch {}
+  return null;
+}
+
 function prog(pct,text){
   document.getElementById('prog-fill').style.width=pct+'%';
   document.getElementById('prog-label').textContent=text;
 }
 function sleep(ms){return new Promise(r=>setTimeout(r,ms));}
 
-// ── Manage ──
-document.getElementById('manage-btn').addEventListener('click',()=>{
-  buildUList();
-  document.getElementById('mg-modal').classList.add('open');
-});
-document.getElementById('close-mg-btn').addEventListener('click',()=>
-  document.getElementById('mg-modal').classList.remove('open'));
+// ── Manage ────────────────────────────────────────────────
+document.getElementById('manage-btn').addEventListener('click',()=>{ buildUList(); document.getElementById('mg-modal').classList.add('open'); });
+document.getElementById('close-mg-btn').addEventListener('click',()=> document.getElementById('mg-modal').classList.remove('open'));
 document.getElementById('clear-btn').addEventListener('click',()=>{
   if(!confirm('Delete ALL data? This cannot be undone.')) return;
   localStorage.removeItem(SK);
@@ -466,9 +571,7 @@ document.getElementById('clear-btn').addEventListener('click',()=>{
 function buildUList(){
   const d=ls(), el=document.getElementById('ulist');
   el.innerHTML='';
-  if(!d.uploads.length){
-    el.innerHTML='<p style="color:#aaa;font-size:13px;padding:8px 0;">No uploads yet.</p>';return;
-  }
+  if(!d.uploads.length){ el.innerHTML='<p style="color:#aaa;font-size:13px;padding:8px 0;">No uploads yet.</p>'; return; }
   [...d.uploads].sort((a,b)=>(a.year*12+a.month)-(b.year*12+b.month)).forEach(u=>{
     const placed=u.customers.filter(c=>c.lat!=null).length;
     const div=document.createElement('div');
@@ -498,7 +601,14 @@ function esc(s){return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').
   (g=>{var h,a,k,p="The Google Maps JavaScript API",c="google",l="importLibrary",q="__ib__",m=document,b=window;b=b[c]||(b[c]={});var d=b.maps||(b.maps={}),r=new Set,e=new URLSearchParams,u=()=>h||(h=new Promise(async(f,n)=>{await (a=m.createElement("script"));e.set("libraries",[...r]+"");for(k in g)e.set(k.replace(/[A-Z]/g,t=>"_"+t[0].toLowerCase()),g[k]);e.set("callback",c+".maps."+q);a.src=`https://maps.googleapis.com/maps/api/js?`+e;a.onerror=()=>h=n(Error(p+" could not load."));a.nonce=m.querySelector("script[nonce]")?.nonce||"";m.head.append(a);d[q]=f}));d[l]?console.warn(p+" only loads once. Ignoring:",g):d[l]=(f,...n)=>r.add(f)&&u().then(()=>d[l](f,...n))})
   ({key:"AIzaSyBhdp-poLfVFEAe3oT7A1n78V3kuMixg0c",v:"weekly"});
 </script>
-<script>async function bootstrap(){await google.maps.importLibrary("maps");initMap();}bootstrap();</script>
+<script>
+  async function bootstrap(){
+    await google.maps.importLibrary("maps");
+    await google.maps.importLibrary("visualization");
+    initMap();
+  }
+  bootstrap();
+</script>
 
 </body>
 </html>
