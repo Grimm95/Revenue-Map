@@ -382,7 +382,7 @@ function applyFilters() {
     renderVisibleDots();
   } else {
     clearDots();
-    if(heatmap) heatmap.setMap(map);
+    zipCircles.forEach(c => c.setMap(map));
     document.getElementById('zoom-hint').style.opacity='1';
   }
 
@@ -519,8 +519,10 @@ function renderVisibleDots() {
               <td style="text-align:right;">${c.completedJobs||0}</td></tr>
           <tr><td style="color:#666;padding:2px 0;">Report Period</td>
               <td style="text-align:right;">${esc(c.uploadLabel)}</td></tr>
-          ${c.businessUnit?`<tr><td style="color:#666;padding:2px 0;">Business Unit</td>
-              <td style="text-align:right;">${esc(c.businessUnit)}</td></tr>`:''}
+          ${c.businessUnit?`<tr><td style="color:#666;padding:2px 0;">Business Unit</td><td style="text-align:right;">${esc(c.businessUnit)}</td></tr>`:''}
+          ${c.jobType?`<tr><td style="color:#666;padding:2px 0;">Job Type</td><td style="text-align:right;">${esc(c.jobType)}</td></tr>`:''}
+          ${c.tenantName?`<tr><td style="color:#666;padding:2px 0;">Company</td><td style="text-align:right;">${esc(c.tenantName)}</td></tr>`:''}
+          ${c.completionDate?`<tr><td style="color:#666;padding:2px 0;">Completion Date</td><td style="text-align:right;">${esc(c.completionDate)}</td></tr>`:''}
         </table>
       </div>`;
 
@@ -564,16 +566,54 @@ document.getElementById('confirm-btn').addEventListener('click', async()=>{
     const rows=XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]]);
     prog(5,`Parsed ${rows.length} records`);
 
-    const customers=rows.map(r=>({
-      customerName    : r['Customer Name']||r['Location Name']||'',
-      address         : (r['Customer Address']||'').trim(),
-      zip             : String(r['Customer Zip']||'').replace('.0','').padStart(5,'0'),
-      completedRevenue: parseFloat(r['Completed Revenue'])||0,
-      lifetimeRevenue : parseFloat(r['Locations Lifetime Revenue'])||0,
-      completedJobs   : parseInt(r['Completed Jobs'])||0,
-      businessUnit    : r['Business Unit']||r['BusinessUnit']||r['business_unit']||null,
-      lat:null, lng:null,
-    })).filter(c=>c.zip.length>=4);
+    if(rows.length) console.log('Excel columns detected:', Object.keys(rows[0]));
+
+    const customers=rows.map(r=>{
+      // Address — try all common column names
+      const address = (r['Customer Address'] ?? r['Address'] ?? r['address'] ?? '').toString().trim();
+
+      // Zip — try dedicated column first, then extract from address string
+      let zip = '';
+      const rawZip = r['Customer Zip'] ?? r['Zip'] ?? r['ZIP'] ?? r['zip'] ??
+                     r['Postal Code'] ?? r['PostalCode'] ?? r['Zip Code'] ?? '';
+      if(rawZip) {
+        zip = String(rawZip).replace(/\.0$/,'').replace(/\D/g,'').slice(-5).padStart(5,'0');
+      }
+      if(!zip || zip === '00000') {
+        // Extract 5-digit zip from address string (e.g. "Columbia, SC 29206 USA")
+        const m = address.match(/\b(\d{5})\b/);
+        if(m) zip = m[1];
+      }
+
+      // Customer name — try all common column names
+      const customerName = String(
+        r['Customer Name'] ?? r['Location Name'] ?? r['Tenant Name'] ??
+        r['Name'] ?? r['Customer'] ?? ''
+      );
+
+      // Revenue — try all common column names
+      const completedRevenue = parseFloat(
+        r['Completed Revenue'] ?? r['Jobs Total Revenue'] ?? r['Revenue'] ??
+        r['Total Revenue'] ?? 0
+      ) || 0;
+
+      // Completion date for future date-based filtering
+      const completionDate = r['Completion Date'] ?? r['Date'] ?? null;
+
+      return {
+        customerName,
+        address,
+        zip,
+        completedRevenue,
+        lifetimeRevenue : parseFloat(r['Locations Lifetime Revenue'] ?? r['Lifetime Revenue'] ?? 0)||0,
+        completedJobs   : parseInt(r['Completed Jobs'] ?? r['Jobs Total'] ?? r['Jobs'] ?? 0)||0,
+        businessUnit    : r['Business Unit']||r['BusinessUnit']||r['business_unit']||null,
+        jobType         : r['Job Type'] || null,
+        completionDate  : completionDate ? String(completionDate) : null,
+        tenantName      : r['Tenant Name'] || null,
+        lat:null, lng:null,
+      };
+    }).filter(c => c.zip.length === 5 && c.zip !== '00000');
 
     const store=ls();
     const uniqueZips=[...new Set(customers.map(c=>c.zip))].filter(z=>!store.zips[z]);
@@ -614,11 +654,20 @@ document.getElementById('confirm-btn').addEventListener('click', async()=>{
 });
 
 async function geocodeZip(zip) {
+  // Try Zippopotam first (fast)
   try {
     const res=await fetch(`https://api.zippopotam.us/us/${zip}`);
-    if(!res.ok) return null;
+    if(res.ok) {
+      const d=await res.json();
+      if(d.places&&d.places[0]) return {lat:parseFloat(d.places[0].latitude),lng:parseFloat(d.places[0].longitude)};
+    }
+  } catch {}
+  // Fallback: Nominatim
+  try {
+    await sleep(300);
+    const res=await fetch(`https://nominatim.openstreetmap.org/search?postalcode=${zip}&country=US&format=json&limit=1`,{headers:{'Accept-Language':'en'}});
     const d=await res.json();
-    if(d.places&&d.places[0]) return {lat:parseFloat(d.places[0].latitude),lng:parseFloat(d.places[0].longitude)};
+    if(d.length) return {lat:parseFloat(d[0].lat),lng:parseFloat(d[0].lon)};
   } catch {}
   return null;
 }
@@ -724,52 +773,3 @@ document.getElementById('manage-btn').addEventListener('click',()=>{ buildUList(
 document.getElementById('close-mg-btn').addEventListener('click',()=> document.getElementById('mg-modal').classList.remove('open'));
 document.getElementById('clear-btn').addEventListener('click',()=>{
   if(!confirm('Delete ALL data? This cannot be undone.')) return;
-  localStorage.removeItem(SK);
-  document.getElementById('mg-modal').classList.remove('open');
-  loadAndRender();
-});
-
-function buildUList(){
-  const d=ls(), el=document.getElementById('ulist');
-  el.innerHTML='';
-  if(!d.uploads.length){ el.innerHTML='<p style="color:#aaa;font-size:13px;padding:8px 0;">No uploads yet.</p>'; return; }
-  [...d.uploads].sort((a,b)=>(a.year*12+a.month)-(b.year*12+b.month)).forEach(u=>{
-    const placed=u.customers.filter(c=>c.lat!=null).length;
-    const div=document.createElement('div');
-    div.className='urow';
-    div.innerHTML=`
-      <div>
-        <div class="urow-title">${esc(u.label)}</div>
-        <div class="urow-meta">${u.customers.length} customers · ${placed} placed · ${new Date(u.uploadedAt).toLocaleDateString()}</div>
-      </div>
-      <button class="btn danger" style="padding:5px 10px;font-size:12px;" data-id="${u.id}">Delete</button>`;
-    div.querySelector('button').addEventListener('click',()=>delUpload(u.id));
-    el.appendChild(div);
-  });
-}
-
-function delUpload(id){
-  if(!confirm('Delete this upload?')) return;
-  const d=ls(); d.uploads=d.uploads.filter(u=>u.id!==id); ss(d);
-  buildUList(); loadAndRender();
-}
-
-function fmt(n){return new Intl.NumberFormat('en-US',{style:'currency',currency:'USD',maximumFractionDigits:0}).format(n||0);}
-function esc(s){return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
-</script>
-
-<script>
-  (g=>{var h,a,k,p="The Google Maps JavaScript API",c="google",l="importLibrary",q="__ib__",m=document,b=window;b=b[c]||(b[c]={});var d=b.maps||(b.maps={}),r=new Set,e=new URLSearchParams,u=()=>h||(h=new Promise(async(f,n)=>{await (a=m.createElement("script"));e.set("libraries",[...r]+"");for(k in g)e.set(k.replace(/[A-Z]/g,t=>"_"+t[0].toLowerCase()),g[k]);e.set("callback",c+".maps."+q);a.src=`https://maps.googleapis.com/maps/api/js?`+e;a.onerror=()=>h=n(Error(p+" could not load."));a.nonce=m.querySelector("script[nonce]")?.nonce||"";m.head.append(a);d[q]=f}));d[l]?console.warn(p+" only loads once. Ignoring:",g):d[l]=(f,...n)=>r.add(f)&&u().then(()=>d[l](f,...n))})
-  ({key:"AIzaSyBhdp-poLfVFEAe3oT7A1n78V3kuMixg0c",v:"weekly"});
-</script>
-<script>
-  async function bootstrap(){
-    await google.maps.importLibrary("maps");
-    await google.maps.importLibrary("geometry");
-    initMap();
-  }
-  bootstrap();
-</script>
-
-</body>
-</html>
